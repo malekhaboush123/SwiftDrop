@@ -16,7 +16,7 @@ import {
   ActivityIndicator,
   Linking,
 } from 'react-native';
-import { supabase } from './supabase'; // استيراد الاتصال بقاعدة البيانات
+import { supabase } from './supabase';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -224,19 +224,16 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
 
-  // بيانات العميل والطلب
   const [pickup, setPickup] = useState('');
   const [dropoff, setDropoff] = useState('');
   const [details, setDetails] = useState('');
   const [phone, setPhone] = useState('');
   const [fee, setFee] = useState('10');
 
-  // بيانات الكابتن والتبويبات
   const [driverName, setDriverName] = useState('');
   const [driverPhone, setDriverPhone] = useState('');
-  const [driverTab, setDriverTab] = useState('active'); // 'active' | 'completed'
+  const [driverTab, setDriverTab] = useState('active');
 
-  // جلب الطلبات من Supabase وتفعيل الاستماع اللحظي
   useEffect(() => {
     fetchOrders();
 
@@ -360,7 +357,6 @@ export default function App() {
     }
   };
 
-  // فتح اتصال هاتفي أو واتساب
   const openPhoneCall = (phoneNumber) => {
     const cleanPhone = phoneNumber.replace(/[^0-9+]/g, '');
     Linking.openURL(`tel:${cleanPhone}`);
@@ -368,8 +364,15 @@ export default function App() {
 
   const openWhatsApp = (phoneNumber, orderCode) => {
     let cleanPhone = phoneNumber.replace(/[^0-9]/g, '');
-    if (cleanPhone.startsWith('05')) {
-      cleanPhone = '970' + cleanPhone.substring(1);
+    if (cleanPhone.startsWith('00')) {
+      cleanPhone = cleanPhone.substring(2);
+    }
+    if (cleanPhone.startsWith('970')) {
+      cleanPhone = '972' + cleanPhone.substring(3);
+    } else if (cleanPhone.startsWith('05')) {
+      cleanPhone = '972' + cleanPhone.substring(1);
+    } else if (cleanPhone.startsWith('5') && cleanPhone.length === 9) {
+      cleanPhone = '972' + cleanPhone;
     }
     const text = encodeURIComponent(`مرحباً، معك كابتن SwiftDrop بخصوص طلبك رقم #${orderCode}`);
     const url = `https://wa.me/${cleanPhone}?text=${text}`;
@@ -517,7 +520,6 @@ export default function App() {
 
                     <Text style={styles.darkOrderDetails}>📦 {order.details}</Text>
 
-                    {/* عرض بيانات الكابتن إذا تم قبول الطلب */}
                     {order.driver_name && order.status !== 'cancelled' && (
                       <View style={styles.assignedDriverBox}>
                         <Text style={styles.assignedDriverText}>
@@ -536,7 +538,6 @@ export default function App() {
                       </View>
                     )}
 
-                    {/* زر إلغاء الطلب قبل القبول */}
                     {order.status === 'pending' && (
                       <Pressable style={styles.cancelOrderBtn} onPress={() => handleCancelOrder(order.id)}>
                         <Text style={styles.cancelOrderText}>إلغاء الطلب ❌</Text>
@@ -585,7 +586,6 @@ export default function App() {
 
         <ScrollView contentContainerStyle={styles.innerScroll}>
           <View style={styles.formWrapper}>
-            {/* لوحة أرباح وإحصائيات الكابتن */}
             <View style={styles.earningsDashboardCard}>
               <View style={styles.statBox}>
                 <Text style={styles.statLabel}>إجمالي الأرباح المحققة</Text>
@@ -598,7 +598,6 @@ export default function App() {
               </View>
             </View>
 
-            {/* بطاقة تعريف الكابتن */}
             <View style={styles.driverProfileCard}>
               <Text style={styles.driverProfileTitle}>🪪 بطاقة الكابتن (تظهر للعميل عند قبول الطلب)</Text>
               <View style={styles.driverInputsRow}>
@@ -620,7 +619,6 @@ export default function App() {
               </View>
             </View>
 
-            {/* تبويبات الطلبات */}
             <View style={styles.tabsRow}>
               <Pressable
                 style={[styles.tabBtn, driverTab === 'active' && styles.tabBtnActive]}
@@ -671,7 +669,6 @@ export default function App() {
 
                     <Text style={styles.darkOrderDetails}>📦 الطلب: {order.details}</Text>
 
-                    {/* بيانات العميل وأزرار التواصل المباشر */}
                     <View style={styles.customerContactBar}>
                       <Text style={styles.neonPhoneText}>📞 العميل: {order.phone}</Text>
                       <View style={styles.contactButtonsGroup}>
