@@ -14,6 +14,7 @@ import {
   Easing,
   Dimensions,
   ActivityIndicator,
+  Linking,
 } from 'react-native';
 import { supabase } from './supabase'; // استيراد الاتصال بقاعدة البيانات
 
@@ -223,17 +224,22 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
 
+  // بيانات العميل والطلب
   const [pickup, setPickup] = useState('');
   const [dropoff, setDropoff] = useState('');
   const [details, setDetails] = useState('');
   const [phone, setPhone] = useState('');
   const [fee, setFee] = useState('10');
 
+  // بيانات الكابتن والتبويبات
+  const [driverName, setDriverName] = useState('');
+  const [driverPhone, setDriverPhone] = useState('');
+  const [driverTab, setDriverTab] = useState('active'); // 'active' | 'completed'
+
   // جلب الطلبات من Supabase وتفعيل الاستماع اللحظي
   useEffect(() => {
     fetchOrders();
 
-    // الاشتراك في التحديثات اللحظية (Real-time Subscription)
     const subscription = supabase
       .channel('orders-realtime-channel')
       .on(
@@ -273,10 +279,17 @@ export default function App() {
     setLoading(false);
   };
 
+  const showAlert = (title, message) => {
+    if (Platform.OS === 'web') {
+      window.alert(message);
+    } else {
+      Alert.alert(title, message);
+    }
+  };
+
   const handleCreateOrder = async () => {
     if (!pickup.trim() || !dropoff.trim() || !details.trim() || !phone.trim()) {
-      const msg = 'يرجى تعبئة جميع الحقول المطلوبة لإرسال الطلب.';
-      Platform.OS === 'web' ? window.alert(msg) : Alert.alert('تنبيه', msg);
+      showAlert('تنبيه', 'يرجى تعبئة جميع الحقول المطلوبة لإرسال الطلب.');
       return;
     }
 
@@ -298,8 +311,7 @@ export default function App() {
     setSubmitting(false);
 
     if (error) {
-      const errMsg = 'حدث خطأ أثناء إرسال الطلب: ' + error.message;
-      Platform.OS === 'web' ? window.alert(errMsg) : Alert.alert('خطأ', errMsg);
+      showAlert('خطأ', 'حدث خطأ أثناء إرسال الطلب: ' + error.message);
       return;
     }
 
@@ -308,19 +320,63 @@ export default function App() {
     setDetails('');
     setPhone('');
 
-    const successMsg = `تم إرسال طلبك (${orderCode}) إلى السحابة بنجاح! سيظهر الآن للمندوبين.`;
-    Platform.OS === 'web' ? window.alert(successMsg) : Alert.alert('تم الإرسال 🚀', successMsg);
+    showAlert('تم الإرسال 🚀', `تم إرسال طلبك (${orderCode}) إلى السحابة بنجاح! سيظهر الآن للمندوبين.`);
   };
 
   const updateOrderStatus = async (orderId, nextStatus) => {
+    if (nextStatus === 'accepted') {
+      if (!driverName.trim() || !driverPhone.trim()) {
+        showAlert('بيانات الكابتن مطلوبة', 'يرجى كتابة اسمك ورقم جوالك في بطاقة الكابتن بالأعلى قبل قبول الطلب.');
+        return;
+      }
+    }
+
+    const updatePayload = { status: nextStatus };
+    if (nextStatus === 'accepted') {
+      updatePayload.driver_name = driverName.trim();
+      updatePayload.driver_phone = driverPhone.trim();
+    }
+
     const { error } = await supabase
       .from('orders')
-      .update({ status: nextStatus })
+      .update(updatePayload)
       .eq('id', orderId);
 
     if (error) {
-      const errMsg = 'تعذر تحديث الحالة: ' + error.message;
-      Platform.OS === 'web' ? window.alert(errMsg) : Alert.alert('خطأ', errMsg);
+      showAlert('خطأ', 'تعذر تحديث الحالة: ' + error.message);
+    }
+  };
+
+  const handleCancelOrder = async (orderId) => {
+    if (Platform.OS === 'web') {
+      const confirmed = window.confirm('هل أنت متأكد من إلغاء هذا الطلب؟');
+      if (!confirmed) return;
+      await updateOrderStatus(orderId, 'cancelled');
+    } else {
+      Alert.alert('إلغاء الطلب', 'هل أنت متأكد من إلغاء هذا الطلب؟', [
+        { text: 'تراجع', style: 'cancel' },
+        { text: 'نعم، إلغاء', style: 'destructive', onPress: () => updateOrderStatus(orderId, 'cancelled') },
+      ]);
+    }
+  };
+
+  // فتح اتصال هاتفي أو واتساب
+  const openPhoneCall = (phoneNumber) => {
+    const cleanPhone = phoneNumber.replace(/[^0-9+]/g, '');
+    Linking.openURL(`tel:${cleanPhone}`);
+  };
+
+  const openWhatsApp = (phoneNumber, orderCode) => {
+    let cleanPhone = phoneNumber.replace(/[^0-9]/g, '');
+    if (cleanPhone.startsWith('05')) {
+      cleanPhone = '970' + cleanPhone.substring(1);
+    }
+    const text = encodeURIComponent(`مرحباً، معك كابتن SwiftDrop بخصوص طلبك رقم #${orderCode}`);
+    const url = `https://wa.me/${cleanPhone}?text=${text}`;
+    if (Platform.OS === 'web') {
+      window.open(url, '_blank');
+    } else {
+      Linking.openURL(url);
     }
   };
 
@@ -340,6 +396,8 @@ export default function App() {
         return { text: 'تم الاستلام وجاري التوصيل 📦', bg: 'rgba(168, 85, 247, 0.15)', border: '#A855F7', color: '#D8B4FE' };
       case 'delivered':
         return { text: 'تم التسليم بنجاح ✅', bg: 'rgba(16, 185, 129, 0.15)', border: '#10B981', color: '#34D399' };
+      case 'cancelled':
+        return { text: 'ملغي ❌', bg: 'rgba(239, 68, 68, 0.15)', border: '#EF4444', color: '#F87171' };
       default:
         return { text: status, bg: '#1E293B', border: '#475569', color: '#CBD5E1' };
     }
@@ -459,6 +517,32 @@ export default function App() {
 
                     <Text style={styles.darkOrderDetails}>📦 {order.details}</Text>
 
+                    {/* عرض بيانات الكابتن إذا تم قبول الطلب */}
+                    {order.driver_name && order.status !== 'cancelled' && (
+                      <View style={styles.assignedDriverBox}>
+                        <Text style={styles.assignedDriverText}>
+                          🛵 الكابتن: {order.driver_name} ({order.driver_phone})
+                        </Text>
+                        {order.driver_phone && (
+                          <View style={styles.contactMiniRow}>
+                            <Pressable style={styles.miniCallBtn} onPress={() => openPhoneCall(order.driver_phone)}>
+                              <Text style={styles.miniContactText}>📞 اتصال</Text>
+                            </Pressable>
+                            <Pressable style={styles.miniWaBtn} onPress={() => openWhatsApp(order.driver_phone, order.order_code)}>
+                              <Text style={styles.miniContactText}>💬 واتساب</Text>
+                            </Pressable>
+                          </View>
+                        )}
+                      </View>
+                    )}
+
+                    {/* زر إلغاء الطلب قبل القبول */}
+                    {order.status === 'pending' && (
+                      <Pressable style={styles.cancelOrderBtn} onPress={() => handleCancelOrder(order.id)}>
+                        <Text style={styles.cancelOrderText}>إلغاء الطلب ❌</Text>
+                      </Pressable>
+                    )}
+
                     <View style={styles.darkOrderFooter}>
                       <Text style={styles.neonFeeText}>الأجرة: {order.fee} ₪ (كاش)</Text>
                       <Text style={styles.timeText}>{formatTime(order.created_at)}</Text>
@@ -477,6 +561,12 @@ export default function App() {
   // 2. واجهة المندوب
   // ==========================================
   if (role === 'driver') {
+    const deliveredOrders = orders.filter((o) => o.status === 'delivered');
+    const totalEarnings = deliveredOrders.reduce((sum, o) => sum + (parseFloat(o.fee) || 0), 0);
+
+    const activeOrders = orders.filter((o) => ['pending', 'accepted', 'picked_up'].includes(o.status));
+    const displayedOrders = driverTab === 'active' ? activeOrders : deliveredOrders;
+
     return (
       <SafeAreaView style={styles.darkScreenRoot}>
         <StatusBar barStyle="light-content" backgroundColor="#050814" />
@@ -495,14 +585,71 @@ export default function App() {
 
         <ScrollView contentContainerStyle={styles.innerScroll}>
           <View style={styles.formWrapper}>
-            <Text style={styles.darkSectionHeader}>📡 رادار الطلبات الحية ({orders.length})</Text>
+            {/* لوحة أرباح وإحصائيات الكابتن */}
+            <View style={styles.earningsDashboardCard}>
+              <View style={styles.statBox}>
+                <Text style={styles.statLabel}>إجمالي الأرباح المحققة</Text>
+                <Text style={styles.statValueOrange}>{totalEarnings} ₪</Text>
+              </View>
+              <View style={styles.statDivider} />
+              <View style={styles.statBox}>
+                <Text style={styles.statLabel}>الطلبات المنجزة</Text>
+                <Text style={styles.statValueGreen}>{deliveredOrders.length} طلب</Text>
+              </View>
+            </View>
+
+            {/* بطاقة تعريف الكابتن */}
+            <View style={styles.driverProfileCard}>
+              <Text style={styles.driverProfileTitle}>🪪 بطاقة الكابتن (تظهر للعميل عند قبول الطلب)</Text>
+              <View style={styles.driverInputsRow}>
+                <TextInput
+                  style={[styles.darkInput, { flex: 1 }]}
+                  placeholder="اسم الكابتن"
+                  placeholderTextColor="#64748B"
+                  value={driverName}
+                  onChangeText={setDriverName}
+                />
+                <TextInput
+                  style={[styles.darkInput, { flex: 1 }]}
+                  placeholder="جوال الكابتن 059..."
+                  placeholderTextColor="#64748B"
+                  keyboardType="phone-pad"
+                  value={driverPhone}
+                  onChangeText={setDriverPhone}
+                />
+              </View>
+            </View>
+
+            {/* تبويبات الطلبات */}
+            <View style={styles.tabsRow}>
+              <Pressable
+                style={[styles.tabBtn, driverTab === 'active' && styles.tabBtnActive]}
+                onPress={() => setDriverTab('active')}
+              >
+                <Text style={[styles.tabBtnText, driverTab === 'active' && styles.tabBtnTextActive]}>
+                  📡 الطلبات النشطة ({activeOrders.length})
+                </Text>
+              </Pressable>
+              <Pressable
+                style={[styles.tabBtn, driverTab === 'completed' && styles.tabBtnActive]}
+                onPress={() => setDriverTab('completed')}
+              >
+                <Text style={[styles.tabBtnText, driverTab === 'completed' && styles.tabBtnTextActive]}>
+                  ✅ المكتملة ({deliveredOrders.length})
+                </Text>
+              </Pressable>
+            </View>
 
             {loading ? (
               <ActivityIndicator size="large" color="#F97316" style={{ marginTop: 20 }} />
-            ) : orders.length === 0 ? (
-              <Text style={styles.emptyText}>بانتظار وصول طلبات جديدة من العملاء...</Text>
+            ) : displayedOrders.length === 0 ? (
+              <Text style={styles.emptyText}>
+                {driverTab === 'active'
+                  ? 'لا توجد طلبات نشطة حالياً. بانتظار طلبات جديدة...'
+                  : 'لا توجد طلبات مكتملة في السجل بعد.'}
+              </Text>
             ) : (
-              orders.map((order) => {
+              displayedOrders.map((order) => {
                 const badge = getStatusBadge(order.status);
                 return (
                   <GlassInteractiveBox
@@ -523,7 +670,25 @@ export default function App() {
                     </View>
 
                     <Text style={styles.darkOrderDetails}>📦 الطلب: {order.details}</Text>
-                    <Text style={styles.neonPhoneText}>📞 جوال العميل: {order.phone}</Text>
+
+                    {/* بيانات العميل وأزرار التواصل المباشر */}
+                    <View style={styles.customerContactBar}>
+                      <Text style={styles.neonPhoneText}>📞 العميل: {order.phone}</Text>
+                      <View style={styles.contactButtonsGroup}>
+                        <Pressable
+                          style={styles.callActionBtn}
+                          onPress={() => openPhoneCall(order.phone)}
+                        >
+                          <Text style={styles.contactBtnText}>📞 اتصال</Text>
+                        </Pressable>
+                        <Pressable
+                          style={styles.whatsappActionBtn}
+                          onPress={() => openWhatsApp(order.phone, order.order_code)}
+                        >
+                          <Text style={styles.contactBtnText}>💬 واتساب</Text>
+                        </Pressable>
+                      </View>
+                    </View>
 
                     <View style={styles.driverActions}>
                       {order.status === 'pending' && (
@@ -743,14 +908,41 @@ const styles = StyleSheet.create({
   darkRouteBox: { backgroundColor: 'rgba(5, 8, 20, 0.75)', padding: 12, borderRadius: 12, marginBottom: 10, borderWidth: 1, borderColor: 'rgba(148, 163, 184, 0.15)' },
   darkRouteText: { fontSize: 15, fontWeight: '700', color: '#F8FAFC', textAlign: 'right', marginBottom: 6 },
   darkOrderDetails: { fontSize: 15, fontWeight: '600', color: '#FDE68A', textAlign: 'right', backgroundColor: 'rgba(245, 158, 11, 0.1)', padding: 12, borderRadius: 10, borderWidth: 1, borderColor: 'rgba(245, 158, 11, 0.3)' },
-  neonPhoneText: { fontSize: 15, fontWeight: '800', color: '#38BDF8', textAlign: 'right', marginTop: 10 },
+  assignedDriverBox: { marginTop: 12, backgroundColor: 'rgba(56, 189, 248, 0.1)', borderWidth: 1, borderColor: 'rgba(56, 189, 248, 0.35)', borderRadius: 12, padding: 10, flexDirection: 'row-reverse', justifyContent: 'space-between', alignItems: 'center' },
+  assignedDriverText: { color: '#7DD3FC', fontSize: 14, fontWeight: '800', flex: 1, textAlign: 'right' },
+  contactMiniRow: { flexDirection: 'row-reverse', gap: 6 },
+  miniCallBtn: { backgroundColor: '#0284C7', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8 },
+  miniWaBtn: { backgroundColor: '#16A34A', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8 },
+  miniContactText: { color: '#FFFFFF', fontSize: 12, fontWeight: '800' },
+  cancelOrderBtn: { marginTop: 12, backgroundColor: 'rgba(239, 68, 68, 0.15)', borderWidth: 1, borderColor: '#EF4444', paddingVertical: 10, borderRadius: 10, alignItems: 'center' },
+  cancelOrderText: { color: '#F87171', fontSize: 14, fontWeight: '800' },
+  neonPhoneText: { fontSize: 15, fontWeight: '800', color: '#38BDF8', textAlign: 'right' },
   darkOrderFooter: { flexDirection: 'row-reverse', justifyContent: 'space-between', borderTopWidth: 1, borderTopColor: 'rgba(148, 163, 184, 0.15)', paddingTop: 12, marginTop: 12 },
   neonFeeText: { fontSize: 15, fontWeight: '800', color: '#34D399' },
   timeText: { fontSize: 13, fontWeight: '600', color: '#64748B' },
   liveCaptainPill: { flexDirection: 'row-reverse', alignItems: 'center', backgroundColor: 'rgba(16, 185, 129, 0.2)', borderWidth: 1, borderColor: '#10B981', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 14 },
   liveCaptainDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#10B981', marginLeft: 6 },
   liveCaptainText: { fontSize: 13, fontWeight: '800', color: '#34D399' },
+  earningsDashboardCard: { flexDirection: 'row-reverse', backgroundColor: 'rgba(15, 23, 42, 0.88)', borderRadius: 18, padding: 16, marginBottom: 16, borderWidth: 1.5, borderColor: 'rgba(249, 115, 22, 0.35)', alignItems: 'center' },
+  statBox: { flex: 1, alignItems: 'center' },
+  statDivider: { width: 1, height: 40, backgroundColor: 'rgba(148, 163, 184, 0.2)' },
+  statLabel: { fontSize: 13, color: '#94A3B8', fontWeight: '700', marginBottom: 4 },
+  statValueOrange: { fontSize: 22, fontWeight: '900', color: '#FB923C' },
+  statValueGreen: { fontSize: 22, fontWeight: '900', color: '#34D399' },
+  driverProfileCard: { backgroundColor: 'rgba(15, 23, 42, 0.85)', borderRadius: 18, padding: 14, marginBottom: 16, borderWidth: 1, borderColor: 'rgba(148, 163, 184, 0.2)' },
+  driverProfileTitle: { fontSize: 13, fontWeight: '800', color: '#FDBA74', textAlign: 'right', marginBottom: 10 },
+  driverInputsRow: { flexDirection: 'row-reverse', gap: 10 },
+  tabsRow: { flexDirection: 'row-reverse', gap: 10, marginBottom: 16 },
+  tabBtn: { flex: 1, paddingVertical: 12, borderRadius: 12, backgroundColor: 'rgba(15, 23, 42, 0.75)', borderWidth: 1, borderColor: 'rgba(148, 163, 184, 0.2)', alignItems: 'center' },
+  tabBtnActive: { backgroundColor: 'rgba(249, 115, 22, 0.2)', borderColor: '#F97316' },
+  tabBtnText: { fontSize: 14, fontWeight: '800', color: '#94A3B8' },
+  tabBtnTextActive: { color: '#FB923C' },
+  customerContactBar: { marginTop: 12, flexDirection: 'row-reverse', justifyContent: 'space-between', alignItems: 'center', backgroundColor: 'rgba(5, 8, 20, 0.6)', padding: 10, borderRadius: 12 },
+  contactButtonsGroup: { flexDirection: 'row-reverse', gap: 8 },
+  callActionBtn: { backgroundColor: '#0284C7', paddingHorizontal: 12, paddingVertical: 7, borderRadius: 8 },
+  whatsappActionBtn: { backgroundColor: '#16A34A', paddingHorizontal: 12, paddingVertical: 7, borderRadius: 8 },
+  contactBtnText: { color: '#FFFFFF', fontSize: 13, fontWeight: '800' },
   neonEarnBadge: { fontSize: 16, fontWeight: '900', color: '#FB923C', backgroundColor: 'rgba(249, 115, 22, 0.15)', borderWidth: 1, borderColor: 'rgba(249, 115, 22, 0.4)', paddingHorizontal: 12, paddingVertical: 5, borderRadius: 10 },
-  driverActions: { marginTop: 16 },
+  driverActions: { marginTop: 14 },
   neonActionBtn: { paddingVertical: 14, borderRadius: 12, alignItems: 'center' },
 });
