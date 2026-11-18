@@ -19,7 +19,47 @@ import {
 import { supabase } from './supabase';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
-const ADMIN_PIN = '2026'; // رمز الدخول السري للوحة الإدارة
+const ADMIN_PIN = '2026';
+
+// ==========================================
+// 0. محرك التنبيهات الصوتية المدمج (بدون ملفات خارجية)
+// ==========================================
+const playNotificationSound = (type = 'new_order') => {
+  try {
+    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (!AudioCtx) return;
+      const ctx = new AudioCtx();
+
+      const playTone = (freq, startTime, duration) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(freq, startTime);
+        gain.gain.setValueAtTime(0.25, startTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, startTime + duration);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(startTime);
+        osc.stop(startTime + duration);
+      };
+
+      const now = ctx.currentTime;
+      if (type === 'new_order') {
+        // رنّة تنبيه ثلاثية للكابتن عند وصول طلب جديد
+        playTone(587.33, now, 0.18);        // D5
+        playTone(880.0, now + 0.18, 0.22);  // A5
+        playTone(1174.66, now + 0.4, 0.35); // D6
+      } else {
+        // نغمة ناعمة لتحديث حالة الطلب للعميل
+        playTone(523.25, now, 0.15);        // C5
+        playTone(659.25, now + 0.15, 0.25); // E5
+      }
+    }
+  } catch (e) {
+    console.log('Audio playback skipped:', e);
+  }
+};
 
 // ==========================================
 // 1. خلفية الشركة الفخمة المتحركة
@@ -133,7 +173,7 @@ const ExecutiveVespaTrack = () => {
   return (
     <View style={styles.fleetTrackCard}>
       <View style={styles.fleetStatusHeader}>
-        <Text style={styles.fleetLabel}>أسطول التوصيل المتصل بالسحابة • CLOUD LIVE</Text>
+        <Text style={styles.fleetLabel}>أسطول التوصيل المتصل بالسحابة • GPS & CLOUD LIVE</Text>
         <View style={styles.activeDot} />
       </View>
 
@@ -219,7 +259,7 @@ const GlassInteractiveBox = ({ onPress, style, children, glowColor = '#F97316', 
   );
 };
 
-// أدوات حفظ محلية بسيطة تعمل على الويب والموبايل
+// أدوات حفظ محلية
 const saveLocal = (key, value) => {
   try {
     if (Platform.OS === 'web' && typeof window !== 'undefined') {
@@ -238,27 +278,36 @@ const getLocal = (key) => {
 };
 
 export default function App() {
-  const [role, setRole] = useState('home'); // 'home' | 'customer' | 'driver' | 'admin_login' | 'admin'
+  const [role, setRole] = useState('home');
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
 
-  // بيانات العميل
+  // بيانات العميل + GPS
   const [pickup, setPickup] = useState('');
   const [dropoff, setDropoff] = useState('');
   const [details, setDetails] = useState('');
   const [phone, setPhone] = useState(() => getLocal('swiftdrop_customer_phone'));
   const [fee, setFee] = useState('10');
+  const [coords, setCoords] = useState(null); // { lat, lng }
+  const [locatingGps, setLocatingGps] = useState(false);
 
-  // بيانات الكابتن (محفوظة تلقائياً)
+  // بيانات الكابتن + الصوت
   const [driverName, setDriverName] = useState(() => getLocal('swiftdrop_driver_name'));
   const [driverPhone, setDriverPhone] = useState(() => getLocal('swiftdrop_driver_phone'));
   const [driverTab, setDriverTab] = useState('active');
+  const [soundEnabled, setSoundEnabled] = useState(true);
 
   // بيانات الإدارة
   const [adminPinInput, setAdminPinInput] = useState('');
-  const [commissionRate, setCommissionRate] = useState(15); // نسبة عمولة التطبيق 15%
+  const [commissionRate, setCommissionRate] = useState(15);
   const [feeOptions, setFeeOptions] = useState(['7', '10', '15', '20']);
+
+  // مراجع لتتبع الدور والصوت داخل اشتراك Realtime
+  const roleRef = useRef(role);
+  const soundRef = useRef(soundEnabled);
+  useEffect(() => { roleRef.current = role; }, [role]);
+  useEffect(() => { soundRef.current = soundEnabled; }, [soundEnabled]);
 
   useEffect(() => {
     fetchOrders();
@@ -271,10 +320,18 @@ export default function App() {
         (payload) => {
           if (payload.eventType === 'INSERT') {
             setOrders((prev) => [payload.new, ...prev]);
+            // تشغيل رنّة التنبيه للكابتن عند نزول طلب جديد
+            if (roleRef.current === 'driver' && soundRef.current) {
+              playNotificationSound('new_order');
+            }
           } else if (payload.eventType === 'UPDATE') {
             setOrders((prev) =>
               prev.map((order) => (order.id === payload.new.id ? payload.new : order))
             );
+            // تشغيل نغمة للعميل عند تحديث حالة طلبه
+            if (roleRef.current === 'customer' && soundRef.current) {
+              playNotificationSound('status_update');
+            }
           } else if (payload.eventType === 'DELETE') {
             setOrders((prev) => prev.filter((order) => order.id !== payload.old.id));
           }
@@ -305,6 +362,43 @@ export default function App() {
       window.alert(message);
     } else {
       Alert.alert(title, message);
+    }
+  };
+
+  // التقاط إحداثيات موقع العميل GPS
+  const handleGetCurrentLocation = () => {
+    if (typeof navigator === 'undefined' || !navigator.geolocation) {
+      showAlert('تنبيه', 'المتصفح أو الجهاز لا يدعم تحديد الموقع GPS.');
+      return;
+    }
+
+    setLocatingGps(true);
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        const { latitude, longitude } = position.coords;
+        setCoords({ lat: latitude, lng: longitude });
+        setLocatingGps(false);
+        if (!dropoff.trim()) {
+          setDropoff(`موقعي الحالي GPS (${latitude.toFixed(4)}, ${longitude.toFixed(4)})`);
+        }
+        showAlert('تم تحديد الموقع 📍', 'تم التقاط إحداثيات موقعك بنجاح! سيظهر رابط الخريطة للكابتن.');
+      },
+      (error) => {
+        setLocatingGps(false);
+        showAlert('تعذر تحديد الموقع', 'يرجى السماح للمتصفح بالوصول إلى الموقع (Location) من إعدادات المتصفح.');
+      },
+      { enableHighAccuracy: true, timeout: 10000 }
+    );
+  };
+
+  const openGoogleMaps = (lat, lng, textAddress) => {
+    const url = lat && lng
+      ? `https://www.google.com/maps/search/?api=1&query=${lat},${lng}`
+      : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(textAddress)}`;
+    if (Platform.OS === 'web') {
+      window.open(url, '_blank');
+    } else {
+      Linking.openURL(url);
     }
   };
 
@@ -341,6 +435,8 @@ export default function App() {
         phone: phone.trim(),
         fee,
         status: 'pending',
+        lat: coords ? coords.lat : null,
+        lng: coords ? coords.lng : null,
       },
     ]);
 
@@ -354,9 +450,10 @@ export default function App() {
     setPickup('');
     setDropoff('');
     setDetails('');
+    setCoords(null);
     saveLocal('swiftdrop_customer_phone', phone.trim());
 
-    showAlert('تم الإرسال 🚀', `تم إرسال طلبك (${orderCode}) إلى السحابة بنجاح!`);
+    showAlert('تم الإرسال 🚀', `تم إرسال طلبك (${orderCode}) إلى السحابة مع بيانات الموقع!`);
   };
 
   const updateOrderStatus = async (orderId, nextStatus) => {
@@ -466,7 +563,7 @@ export default function App() {
   };
 
   // ==========================================
-  // 1. واجهة العميل (عرض طلبات العميل الخاصة به فقط + التقييم)
+  // 1. واجهة العميل (مع زر GPS والخرائط)
   // ==========================================
   if (role === 'customer') {
     const cleanUserPhone = phone.trim().replace(/[^0-9]/g, '');
@@ -511,14 +608,41 @@ export default function App() {
                 onChangeText={setPickup}
               />
 
-              <Text style={styles.darkInputLabel}>نقطة التسليم (إلى أين؟)</Text>
+              <View style={styles.gpsLabelRow}>
+                <Pressable
+                  style={[styles.gpsDetectBtn, coords && styles.gpsDetectBtnActive]}
+                  onPress={handleGetCurrentLocation}
+                  disabled={locatingGps}
+                >
+                  <Text style={styles.gpsDetectText}>
+                    {locatingGps
+                      ? 'جاري الالتقاط... 📡'
+                      : coords
+                      ? '✅ تم التقاط GPS (تحديث)'
+                      : '📍 حدد موقعي تلقائياً GPS'}
+                  </Text>
+                </Pressable>
+                <Text style={styles.darkInputLabel}>نقطة التسليم (إلى أين؟)</Text>
+              </View>
+
               <TextInput
                 style={styles.darkInput}
-                placeholder="مثال: حي الرمال - شارع الجلاء - عمارة 12"
+                placeholder="اكتب العنوان أو اضغط زر تحديد الموقع GPS"
                 placeholderTextColor="#64748B"
                 value={dropoff}
                 onChangeText={setDropoff}
               />
+
+              {coords && (
+                <Pressable
+                  style={styles.previewMapLink}
+                  onPress={() => openGoogleMaps(coords.lat, coords.lng, dropoff)}
+                >
+                  <Text style={styles.previewMapText}>
+                    🗺️ معاينة دبوس موقعك على خرائط جوجل ({coords.lat.toFixed(4)}, {coords.lng.toFixed(4)}) ←
+                  </Text>
+                </Pressable>
+              )}
 
               <Text style={styles.darkInputLabel}>تفاصيل الأغراض المطلوبة</Text>
               <TextInput
@@ -604,7 +728,6 @@ export default function App() {
                       </View>
                     )}
 
-                    {/* تقييم الكابتن بالنجوم بعد التسليم */}
                     {order.status === 'delivered' && (
                       <View style={styles.ratingBox}>
                         <Text style={styles.ratingTitle}>
@@ -643,7 +766,7 @@ export default function App() {
   }
 
   // ==========================================
-  // 2. واجهة المندوب
+  // 2. واجهة المندوب (مع الرنّة الصوتية + فتح الخرائط)
   // ==========================================
   if (role === 'driver') {
     const deliveredOrders = orders.filter((o) => o.status === 'delivered');
@@ -651,7 +774,6 @@ export default function App() {
     const appCommission = Math.round((totalEarnings * commissionRate) / 100);
     const netEarnings = totalEarnings - appCommission;
 
-    // حساب متوسط تقييم الكابتن
     const ratedOrders = deliveredOrders.filter((o) => o.rating);
     const avgRating = ratedOrders.length > 0
       ? (ratedOrders.reduce((s, o) => s + o.rating, 0) / ratedOrders.length).toFixed(1)
@@ -677,6 +799,29 @@ export default function App() {
 
         <ScrollView contentContainerStyle={styles.innerScroll}>
           <View style={styles.formWrapper}>
+            {/* شريط التحكم بالصوت والتنبيهات */}
+            <View style={styles.soundControlBar}>
+              <Pressable
+                style={[styles.soundToggleBtn, !soundEnabled && styles.soundToggleBtnMuted]}
+                onPress={() => {
+                  const next = !soundEnabled;
+                  setSoundEnabled(next);
+                  if (next) playNotificationSound('new_order');
+                }}
+              >
+                <Text style={styles.soundToggleText}>
+                  {soundEnabled ? '🔔 رنّة التنبيه مفعّلة' : '🔕 التنبيه الصوتي مكتوم'}
+                </Text>
+              </Pressable>
+
+              <Pressable
+                style={styles.testSoundBtn}
+                onPress={() => playNotificationSound('new_order')}
+              >
+                <Text style={styles.testSoundText}>🔊 تجربة الرنّة</Text>
+              </Pressable>
+            </View>
+
             {/* محفظة الكابتن المالية */}
             <View style={styles.earningsDashboardCard}>
               <View style={styles.statBox}>
@@ -695,7 +840,7 @@ export default function App() {
               </View>
             </View>
 
-            {/* بطاقة الكابتن المحفوظة تلقائياً */}
+            {/* بطاقة الكابتن */}
             <View style={styles.driverProfileCard}>
               <Text style={styles.driverProfileTitle}>🪪 بيانات الكابتن (محفوظة تلقائياً)</Text>
               <View style={styles.driverInputsRow}>
@@ -763,6 +908,18 @@ export default function App() {
                     <View style={styles.darkRouteBox}>
                       <Text style={styles.darkRouteText}>🟢 استلام: {order.pickup}</Text>
                       <Text style={styles.darkRouteText}>🔴 تسليم: {order.dropoff}</Text>
+
+                      {/* زر فتح المسار على خرائط جوجل */}
+                      <Pressable
+                        style={[styles.mapsNavigateBtn, order.lat && styles.mapsNavigateBtnGps]}
+                        onPress={() => openGoogleMaps(order.lat, order.lng, order.dropoff)}
+                      >
+                        <Text style={styles.mapsNavigateText}>
+                          {order.lat
+                            ? '📍 فتح موقع العميل الدقيق (GPS) في خرائط جوجل 🗺️'
+                            : '🗺️ البحث عن العنوان في خرائط جوجل'}
+                        </Text>
+                      </Pressable>
                     </View>
 
                     <Text style={styles.darkOrderDetails}>📦 الطلب: {order.details}</Text>
@@ -896,7 +1053,6 @@ export default function App() {
 
         <ScrollView contentContainerStyle={styles.innerScroll}>
           <View style={styles.formWrapper}>
-            {/* إحصائيات المشروع الشاملة */}
             <View style={[styles.earningsDashboardCard, { borderColor: '#A855F7' }]}>
               <View style={styles.statBox}>
                 <Text style={styles.statLabel}>إجمالي الطلبات</Text>
@@ -914,7 +1070,6 @@ export default function App() {
               </View>
             </View>
 
-            {/* التحكم بنسبة العمولة والتسعير */}
             <View style={styles.driverProfileCard}>
               <Text style={styles.driverProfileTitle}>⚙️ إعدادات العمولة والتسعير</Text>
               <View style={styles.feeRow}>
@@ -1141,6 +1296,12 @@ const styles = StyleSheet.create({
   glassFormCard: { backgroundColor: 'rgba(15, 23, 42, 0.85)', borderRadius: 22, padding: 22, borderWidth: 1.5, borderColor: 'rgba(56, 189, 248, 0.25)', marginBottom: 24 },
   glassCardTitle: { fontSize: 19, fontWeight: '800', color: '#FFFFFF', textAlign: 'right', marginBottom: 14 },
   darkInputLabel: { fontSize: 14, fontWeight: '700', color: '#CBD5E1', textAlign: 'right', marginBottom: 6, marginTop: 12 },
+  gpsLabelRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 12, marginBottom: 6 },
+  gpsDetectBtn: { backgroundColor: 'rgba(56, 189, 248, 0.18)', borderWidth: 1, borderColor: '#38BDF8', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 10 },
+  gpsDetectBtnActive: { backgroundColor: 'rgba(16, 185, 129, 0.2)', borderColor: '#10B981' },
+  gpsDetectText: { color: '#7DD3FC', fontSize: 12, fontWeight: '800' },
+  previewMapLink: { marginTop: 8, backgroundColor: 'rgba(16, 185, 129, 0.12)', padding: 8, borderRadius: 8, borderWidth: 1, borderColor: 'rgba(16, 185, 129, 0.35)' },
+  previewMapText: { color: '#34D399', fontSize: 12, fontWeight: '800', textAlign: 'right' },
   darkInput: { backgroundColor: 'rgba(5, 8, 20, 0.85)', borderWidth: 1.5, borderColor: 'rgba(148, 163, 184, 0.25)', borderRadius: 12, paddingHorizontal: 14, paddingVertical: 13, fontSize: 15, color: '#FFFFFF', textAlign: 'right' },
   textArea: { height: 80, textAlignVertical: 'top' },
   feeRow: { flexDirection: 'row-reverse', justifyContent: 'space-between', marginTop: 8, marginBottom: 14, gap: 10 },
@@ -1159,6 +1320,9 @@ const styles = StyleSheet.create({
   orderIdText: { fontSize: 14, fontWeight: '800', color: '#94A3B8' },
   darkRouteBox: { backgroundColor: 'rgba(5, 8, 20, 0.75)', padding: 12, borderRadius: 12, marginBottom: 10, borderWidth: 1, borderColor: 'rgba(148, 163, 184, 0.15)' },
   darkRouteText: { fontSize: 15, fontWeight: '700', color: '#F8FAFC', textAlign: 'right', marginBottom: 6 },
+  mapsNavigateBtn: { marginTop: 6, backgroundColor: 'rgba(56, 189, 248, 0.15)', borderWidth: 1, borderColor: '#38BDF8', paddingVertical: 8, paddingHorizontal: 12, borderRadius: 10, alignItems: 'center' },
+  mapsNavigateBtnGps: { backgroundColor: 'rgba(16, 185, 129, 0.18)', borderColor: '#10B981' },
+  mapsNavigateText: { color: '#E0F2FE', fontSize: 13, fontWeight: '800' },
   darkOrderDetails: { fontSize: 15, fontWeight: '600', color: '#FDE68A', textAlign: 'right', backgroundColor: 'rgba(245, 158, 11, 0.1)', padding: 12, borderRadius: 10, borderWidth: 1, borderColor: 'rgba(245, 158, 11, 0.3)' },
   assignedDriverBox: { marginTop: 12, backgroundColor: 'rgba(56, 189, 248, 0.1)', borderWidth: 1, borderColor: 'rgba(56, 189, 248, 0.35)', borderRadius: 12, padding: 10, flexDirection: 'row-reverse', justifyContent: 'space-between', alignItems: 'center' },
   assignedDriverText: { color: '#7DD3FC', fontSize: 14, fontWeight: '800', flex: 1, textAlign: 'right' },
@@ -1180,6 +1344,12 @@ const styles = StyleSheet.create({
   timeText: { fontSize: 13, fontWeight: '600', color: '#64748B' },
   liveCaptainPill: { flexDirection: 'row-reverse', alignItems: 'center', backgroundColor: 'rgba(245, 158, 11, 0.2)', borderWidth: 1, borderColor: '#F59E0B', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 14 },
   liveCaptainText: { fontSize: 13, fontWeight: '800', color: '#FBBF24' },
+  soundControlBar: { flexDirection: 'row-reverse', justifyContent: 'space-between', gap: 10, marginBottom: 14 },
+  soundToggleBtn: { flex: 1, backgroundColor: 'rgba(16, 185, 129, 0.18)', borderWidth: 1, borderColor: '#10B981', paddingVertical: 10, borderRadius: 12, alignItems: 'center' },
+  soundToggleBtnMuted: { backgroundColor: 'rgba(239, 68, 68, 0.15)', borderColor: '#EF4444' },
+  soundToggleText: { color: '#FFFFFF', fontSize: 13, fontWeight: '800' },
+  testSoundBtn: { backgroundColor: 'rgba(56, 189, 248, 0.18)', borderWidth: 1, borderColor: '#38BDF8', paddingHorizontal: 14, paddingVertical: 10, borderRadius: 12, alignItems: 'center' },
+  testSoundText: { color: '#7DD3FC', fontSize: 13, fontWeight: '800' },
   earningsDashboardCard: { flexDirection: 'row-reverse', backgroundColor: 'rgba(15, 23, 42, 0.88)', borderRadius: 18, padding: 14, marginBottom: 16, borderWidth: 1.5, borderColor: 'rgba(249, 115, 22, 0.35)', alignItems: 'center' },
   statBox: { flex: 1, alignItems: 'center' },
   statDivider: { width: 1, height: 40, backgroundColor: 'rgba(148, 163, 184, 0.2)' },
