@@ -19,6 +19,7 @@ import {
 import { supabase } from './supabase';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
+const ADMIN_PIN = '2026'; // رمز الدخول السري للوحة الإدارة
 
 // ==========================================
 // 1. خلفية الشركة الفخمة المتحركة
@@ -218,21 +219,46 @@ const GlassInteractiveBox = ({ onPress, style, children, glowColor = '#F97316', 
   );
 };
 
+// أدوات حفظ محلية بسيطة تعمل على الويب والموبايل
+const saveLocal = (key, value) => {
+  try {
+    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+      window.localStorage.setItem(key, value);
+    }
+  } catch (e) {}
+};
+
+const getLocal = (key) => {
+  try {
+    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+      return window.localStorage.getItem(key) || '';
+    }
+  } catch (e) {}
+  return '';
+};
+
 export default function App() {
-  const [role, setRole] = useState('home');
+  const [role, setRole] = useState('home'); // 'home' | 'customer' | 'driver' | 'admin_login' | 'admin'
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
 
+  // بيانات العميل
   const [pickup, setPickup] = useState('');
   const [dropoff, setDropoff] = useState('');
   const [details, setDetails] = useState('');
-  const [phone, setPhone] = useState('');
+  const [phone, setPhone] = useState(() => getLocal('swiftdrop_customer_phone'));
   const [fee, setFee] = useState('10');
 
-  const [driverName, setDriverName] = useState('');
-  const [driverPhone, setDriverPhone] = useState('');
+  // بيانات الكابتن (محفوظة تلقائياً)
+  const [driverName, setDriverName] = useState(() => getLocal('swiftdrop_driver_name'));
+  const [driverPhone, setDriverPhone] = useState(() => getLocal('swiftdrop_driver_phone'));
   const [driverTab, setDriverTab] = useState('active');
+
+  // بيانات الإدارة
+  const [adminPinInput, setAdminPinInput] = useState('');
+  const [commissionRate, setCommissionRate] = useState(15); // نسبة عمولة التطبيق 15%
+  const [feeOptions, setFeeOptions] = useState(['7', '10', '15', '20']);
 
   useEffect(() => {
     fetchOrders();
@@ -268,9 +294,7 @@ export default function App() {
       .select('*')
       .order('created_at', { ascending: false });
 
-    if (error) {
-      console.error('Error fetching orders:', error.message);
-    } else {
+    if (!error) {
       setOrders(data || []);
     }
     setLoading(false);
@@ -282,6 +306,21 @@ export default function App() {
     } else {
       Alert.alert(title, message);
     }
+  };
+
+  const handleCustomerPhoneChange = (val) => {
+    setPhone(val);
+    saveLocal('swiftdrop_customer_phone', val);
+  };
+
+  const handleDriverNameChange = (val) => {
+    setDriverName(val);
+    saveLocal('swiftdrop_driver_name', val);
+  };
+
+  const handleDriverPhoneChange = (val) => {
+    setDriverPhone(val);
+    saveLocal('swiftdrop_driver_phone', val);
   };
 
   const handleCreateOrder = async () => {
@@ -315,9 +354,9 @@ export default function App() {
     setPickup('');
     setDropoff('');
     setDetails('');
-    setPhone('');
+    saveLocal('swiftdrop_customer_phone', phone.trim());
 
-    showAlert('تم الإرسال 🚀', `تم إرسال طلبك (${orderCode}) إلى السحابة بنجاح! سيظهر الآن للمندوبين.`);
+    showAlert('تم الإرسال 🚀', `تم إرسال طلبك (${orderCode}) إلى السحابة بنجاح!`);
   };
 
   const updateOrderStatus = async (orderId, nextStatus) => {
@@ -342,6 +381,26 @@ export default function App() {
     if (error) {
       showAlert('خطأ', 'تعذر تحديث الحالة: ' + error.message);
     }
+  };
+
+  const handleRateOrder = async (orderId, stars) => {
+    const { error } = await supabase
+      .from('orders')
+      .update({ rating: stars })
+      .eq('id', orderId);
+
+    if (!error) {
+      showAlert('شكراً لتقييمك ⭐', `تم تقييم الكابتن بـ ${stars} نجوم بنجاح!`);
+    }
+  };
+
+  const handleDeleteOrderAdmin = async (orderId) => {
+    const confirmDelete = Platform.OS === 'web'
+      ? window.confirm('هل تريد حذف هذا الطلب نهائياً من قاعدة البيانات؟')
+      : true;
+    if (!confirmDelete) return;
+
+    await supabase.from('orders').delete().eq('id', orderId);
   };
 
   const handleCancelOrder = async (orderId) => {
@@ -407,9 +466,14 @@ export default function App() {
   };
 
   // ==========================================
-  // 1. واجهة العميل
+  // 1. واجهة العميل (عرض طلبات العميل الخاصة به فقط + التقييم)
   // ==========================================
   if (role === 'customer') {
+    const cleanUserPhone = phone.trim().replace(/[^0-9]/g, '');
+    const myOrders = cleanUserPhone.length >= 6
+      ? orders.filter((o) => o.phone && o.phone.replace(/[^0-9]/g, '').includes(cleanUserPhone.slice(-7)))
+      : [];
+
     return (
       <SafeAreaView style={styles.darkScreenRoot}>
         <StatusBar barStyle="light-content" backgroundColor="#050814" />
@@ -419,7 +483,7 @@ export default function App() {
           <GlassInteractiveBox style={styles.navBackBtn} onPress={() => setRole('home')} glowColor="#38BDF8">
             <Text style={styles.navBackArrow}>→</Text>
           </GlassInteractiveBox>
-          <Text style={styles.navHeaderTitle}>إنشاء طلب توصيل</Text>
+          <Text style={styles.navHeaderTitle}>بوابة العملاء</Text>
           <View style={{ width: 42 }} />
         </View>
 
@@ -427,6 +491,16 @@ export default function App() {
           <View style={styles.formWrapper}>
             <View style={styles.glassFormCard}>
               <Text style={styles.glassCardTitle}>📍 تفاصيل مسار الشحنة</Text>
+
+              <Text style={styles.darkInputLabel}>رقم جوالك (لعرض طلباتك والتواصل)</Text>
+              <TextInput
+                style={styles.darkInput}
+                placeholder="059xxxxxxx"
+                placeholderTextColor="#64748B"
+                keyboardType="phone-pad"
+                value={phone}
+                onChangeText={handleCustomerPhoneChange}
+              />
 
               <Text style={styles.darkInputLabel}>نقطة الاستلام (من أين؟)</Text>
               <TextInput
@@ -456,19 +530,9 @@ export default function App() {
                 onChangeText={setDetails}
               />
 
-              <Text style={styles.darkInputLabel}>رقم الجوال للتواصل</Text>
-              <TextInput
-                style={styles.darkInput}
-                placeholder="059xxxxxxx"
-                placeholderTextColor="#64748B"
-                keyboardType="phone-pad"
-                value={phone}
-                onChangeText={setPhone}
-              />
-
               <Text style={styles.darkInputLabel}>تكلفة التوصيل (شيكل)</Text>
               <View style={styles.feeRow}>
-                {['7', '10', '15', '20'].map((amount) => (
+                {feeOptions.map((amount) => (
                   <View key={amount} style={{ flex: 1 }}>
                     <GlassInteractiveBox
                       style={[styles.darkFeeChip, fee === amount && styles.darkFeeChipActive]}
@@ -495,14 +559,16 @@ export default function App() {
               </GlassInteractiveBox>
             </View>
 
-            <Text style={styles.darkSectionHeader}>📋 طلباتي المباشرة ({orders.length})</Text>
+            <Text style={styles.darkSectionHeader}>📋 طلباتي الخاصة ({myOrders.length})</Text>
 
-            {loading ? (
+            {cleanUserPhone.length < 6 ? (
+              <Text style={styles.emptyText}>أدخل رقم جوالك بالأعلى لعرض طلباتك السابقة والحالية.</Text>
+            ) : loading ? (
               <ActivityIndicator size="large" color="#38BDF8" style={{ marginTop: 20 }} />
-            ) : orders.length === 0 ? (
-              <Text style={styles.emptyText}>لا توجد طلبات حالياً. أنشئ أول طلب بالأعلى!</Text>
+            ) : myOrders.length === 0 ? (
+              <Text style={styles.emptyText}>لا توجد طلبات مسجلة لرقمك حالياً.</Text>
             ) : (
-              orders.map((order) => {
+              myOrders.map((order) => {
                 const badge = getStatusBadge(order.status);
                 return (
                   <GlassInteractiveBox key={order.id} style={styles.glassOrderCard} glowColor="#38BDF8">
@@ -538,6 +604,24 @@ export default function App() {
                       </View>
                     )}
 
+                    {/* تقييم الكابتن بالنجوم بعد التسليم */}
+                    {order.status === 'delivered' && (
+                      <View style={styles.ratingBox}>
+                        <Text style={styles.ratingTitle}>
+                          {order.rating ? `تقييمك للكابتن: ${'⭐'.repeat(order.rating)}` : 'قيّم سرعة وتعامل الكابتن:'}
+                        </Text>
+                        {!order.rating && (
+                          <View style={styles.starsRow}>
+                            {[1, 2, 3, 4, 5].map((star) => (
+                              <Pressable key={star} style={styles.starBtn} onPress={() => handleRateOrder(order.id, star)}>
+                                <Text style={styles.starText}>⭐ {star}</Text>
+                              </Pressable>
+                            ))}
+                          </View>
+                        )}
+                      </View>
+                    )}
+
                     {order.status === 'pending' && (
                       <Pressable style={styles.cancelOrderBtn} onPress={() => handleCancelOrder(order.id)}>
                         <Text style={styles.cancelOrderText}>إلغاء الطلب ❌</Text>
@@ -564,6 +648,14 @@ export default function App() {
   if (role === 'driver') {
     const deliveredOrders = orders.filter((o) => o.status === 'delivered');
     const totalEarnings = deliveredOrders.reduce((sum, o) => sum + (parseFloat(o.fee) || 0), 0);
+    const appCommission = Math.round((totalEarnings * commissionRate) / 100);
+    const netEarnings = totalEarnings - appCommission;
+
+    // حساب متوسط تقييم الكابتن
+    const ratedOrders = deliveredOrders.filter((o) => o.rating);
+    const avgRating = ratedOrders.length > 0
+      ? (ratedOrders.reduce((s, o) => s + o.rating, 0) / ratedOrders.length).toFixed(1)
+      : '5.0';
 
     const activeOrders = orders.filter((o) => ['pending', 'accepted', 'picked_up'].includes(o.status));
     const displayedOrders = driverTab === 'active' ? activeOrders : deliveredOrders;
@@ -579,34 +671,40 @@ export default function App() {
           </GlassInteractiveBox>
           <Text style={styles.navHeaderTitle}>غرفة عمليات الكباتن</Text>
           <View style={styles.liveCaptainPill}>
-            <View style={styles.liveCaptainDot} />
-            <Text style={styles.liveCaptainText}>متصل</Text>
+            <Text style={styles.liveCaptainText}>⭐ {avgRating}</Text>
           </View>
         </View>
 
         <ScrollView contentContainerStyle={styles.innerScroll}>
           <View style={styles.formWrapper}>
+            {/* محفظة الكابتن المالية */}
             <View style={styles.earningsDashboardCard}>
               <View style={styles.statBox}>
-                <Text style={styles.statLabel}>إجمالي الأرباح المحققة</Text>
-                <Text style={styles.statValueOrange}>{totalEarnings} ₪</Text>
+                <Text style={styles.statLabel}>صافي أرباحك</Text>
+                <Text style={styles.statValueGreen}>{netEarnings} ₪</Text>
               </View>
               <View style={styles.statDivider} />
               <View style={styles.statBox}>
-                <Text style={styles.statLabel}>الطلبات المنجزة</Text>
-                <Text style={styles.statValueGreen}>{deliveredOrders.length} طلب</Text>
+                <Text style={styles.statLabel}>عمولة التطبيق ({commissionRate}%)</Text>
+                <Text style={styles.statValueOrange}>{appCommission} ₪</Text>
+              </View>
+              <View style={styles.statDivider} />
+              <View style={styles.statBox}>
+                <Text style={styles.statLabel}>المنجزة</Text>
+                <Text style={styles.statValueBlue}>{deliveredOrders.length}</Text>
               </View>
             </View>
 
+            {/* بطاقة الكابتن المحفوظة تلقائياً */}
             <View style={styles.driverProfileCard}>
-              <Text style={styles.driverProfileTitle}>🪪 بطاقة الكابتن (تظهر للعميل عند قبول الطلب)</Text>
+              <Text style={styles.driverProfileTitle}>🪪 بيانات الكابتن (محفوظة تلقائياً)</Text>
               <View style={styles.driverInputsRow}>
                 <TextInput
                   style={[styles.darkInput, { flex: 1 }]}
                   placeholder="اسم الكابتن"
                   placeholderTextColor="#64748B"
                   value={driverName}
-                  onChangeText={setDriverName}
+                  onChangeText={handleDriverNameChange}
                 />
                 <TextInput
                   style={[styles.darkInput, { flex: 1 }]}
@@ -614,7 +712,7 @@ export default function App() {
                   placeholderTextColor="#64748B"
                   keyboardType="phone-pad"
                   value={driverPhone}
-                  onChangeText={setDriverPhone}
+                  onChangeText={handleDriverPhoneChange}
                 />
               </View>
             </View>
@@ -625,7 +723,7 @@ export default function App() {
                 onPress={() => setDriverTab('active')}
               >
                 <Text style={[styles.tabBtnText, driverTab === 'active' && styles.tabBtnTextActive]}>
-                  📡 الطلبات النشطة ({activeOrders.length})
+                  📡 النشطة ({activeOrders.length})
                 </Text>
               </Pressable>
               <Pressable
@@ -670,22 +768,22 @@ export default function App() {
                     <Text style={styles.darkOrderDetails}>📦 الطلب: {order.details}</Text>
 
                     <View style={styles.customerContactBar}>
-                      <Text style={styles.neonPhoneText}>📞 العميل: {order.phone}</Text>
+                      <Text style={styles.neonPhoneText}>📞 {order.phone}</Text>
                       <View style={styles.contactButtonsGroup}>
-                        <Pressable
-                          style={styles.callActionBtn}
-                          onPress={() => openPhoneCall(order.phone)}
-                        >
+                        <Pressable style={styles.callActionBtn} onPress={() => openPhoneCall(order.phone)}>
                           <Text style={styles.contactBtnText}>📞 اتصال</Text>
                         </Pressable>
-                        <Pressable
-                          style={styles.whatsappActionBtn}
-                          onPress={() => openWhatsApp(order.phone, order.order_code)}
-                        >
+                        <Pressable style={styles.whatsappActionBtn} onPress={() => openWhatsApp(order.phone, order.order_code)}>
                           <Text style={styles.contactBtnText}>💬 واتساب</Text>
                         </Pressable>
                       </View>
                     </View>
+
+                    {order.rating && (
+                      <Text style={styles.driverRatingFeedback}>
+                        تقييم العميل: {'⭐'.repeat(order.rating)}
+                      </Text>
+                    )}
 
                     <View style={styles.driverActions}>
                       {order.status === 'pending' && (
@@ -729,7 +827,162 @@ export default function App() {
   }
 
   // ==========================================
-  // 3. الشاشة الرئيسية
+  // 3. شاشة دخول الإدارة السرية
+  // ==========================================
+  if (role === 'admin_login') {
+    return (
+      <SafeAreaView style={styles.darkScreenRoot}>
+        <CorporateLiveBackground />
+        <View style={styles.glassTopNav}>
+          <GlassInteractiveBox style={styles.navBackBtn} onPress={() => setRole('home')} glowColor="#A855F7">
+            <Text style={styles.navBackArrow}>→</Text>
+          </GlassInteractiveBox>
+          <Text style={styles.navHeaderTitle}>دخول الإدارة</Text>
+          <View style={{ width: 42 }} />
+        </View>
+
+        <View style={[styles.innerScroll, { justifyContent: 'center', flex: 1 }]}>
+          <View style={[styles.glassFormCard, { width: '100%', maxWidth: 400 }]}>
+            <Text style={styles.glassCardTitle}>🔐 أدخل رمز المرور السري (PIN)</Text>
+            <TextInput
+              style={[styles.darkInput, { textAlign: 'center', fontSize: 22, letterSpacing: 6 }]}
+              placeholder="••••"
+              placeholderTextColor="#64748B"
+              keyboardType="numeric"
+              secureTextEntry
+              value={adminPinInput}
+              onChangeText={setAdminPinInput}
+            />
+            <GlassInteractiveBox
+              style={[styles.neonBlueBtn, { backgroundColor: '#7C3AED', marginTop: 18 }]}
+              onPress={() => {
+                if (adminPinInput === ADMIN_PIN) {
+                  setAdminPinInput('');
+                  setRole('admin');
+                } else {
+                  showAlert('خطأ', 'رمز المرور غير صحيح!');
+                }
+              }}
+              glowColor="#A855F7"
+            >
+              <Text style={styles.neonBtnText}>دخول لوحة الإدارة ⚡</Text>
+            </GlassInteractiveBox>
+          </View>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  // ==========================================
+  // 4. لوحة تحكم الإدارة (Admin Dashboard)
+  // ==========================================
+  if (role === 'admin') {
+    const delivered = orders.filter((o) => o.status === 'delivered');
+    const totalRevenue = delivered.reduce((sum, o) => sum + (parseFloat(o.fee) || 0), 0);
+    const platformProfit = Math.round((totalRevenue * commissionRate) / 100);
+
+    return (
+      <SafeAreaView style={styles.darkScreenRoot}>
+        <StatusBar barStyle="light-content" backgroundColor="#050814" />
+        <CorporateLiveBackground />
+
+        <View style={styles.glassTopNav}>
+          <GlassInteractiveBox style={styles.navBackBtn} onPress={() => setRole('home')} glowColor="#A855F7">
+            <Text style={styles.navBackArrow}>→</Text>
+          </GlassInteractiveBox>
+          <Text style={styles.navHeaderTitle}>لوحة تحكم الإدارة 👑</Text>
+          <View style={{ width: 42 }} />
+        </View>
+
+        <ScrollView contentContainerStyle={styles.innerScroll}>
+          <View style={styles.formWrapper}>
+            {/* إحصائيات المشروع الشاملة */}
+            <View style={[styles.earningsDashboardCard, { borderColor: '#A855F7' }]}>
+              <View style={styles.statBox}>
+                <Text style={styles.statLabel}>إجمالي الطلبات</Text>
+                <Text style={styles.statValueBlue}>{orders.length}</Text>
+              </View>
+              <View style={styles.statDivider} />
+              <View style={styles.statBox}>
+                <Text style={styles.statLabel}>حجم التوصيل</Text>
+                <Text style={styles.statValueGreen}>{totalRevenue} ₪</Text>
+              </View>
+              <View style={styles.statDivider} />
+              <View style={styles.statBox}>
+                <Text style={styles.statLabel}>ربح التطبيق ({commissionRate}%)</Text>
+                <Text style={styles.statValueOrange}>{platformProfit} ₪</Text>
+              </View>
+            </View>
+
+            {/* التحكم بنسبة العمولة والتسعير */}
+            <View style={styles.driverProfileCard}>
+              <Text style={styles.driverProfileTitle}>⚙️ إعدادات العمولة والتسعير</Text>
+              <View style={styles.feeRow}>
+                {[10, 15, 20, 25].map((rate) => (
+                  <Pressable
+                    key={rate}
+                    style={[styles.tabBtn, commissionRate === rate && { borderColor: '#A855F7', backgroundColor: 'rgba(168, 85, 247, 0.2)' }]}
+                    onPress={() => setCommissionRate(rate)}
+                  >
+                    <Text style={{ color: '#FFF', fontWeight: '800' }}>عمولة {rate}%</Text>
+                  </Pressable>
+                ))}
+              </View>
+              <View style={styles.feeRow}>
+                <Pressable
+                  style={[styles.tabBtn, { borderColor: '#38BDF8' }]}
+                  onPress={() => {
+                    setFeeOptions(['5', '8', '12', '15']);
+                    showAlert('تم التحديث', 'تم تفعيل تسعيرة العروض المخفضة (5 - 15 شيكل)');
+                  }}
+                >
+                  <Text style={{ color: '#38BDF8', fontWeight: '800' }}>تفعيل تسعيرة العروض 🏷️</Text>
+                </Pressable>
+                <Pressable
+                  style={[styles.tabBtn, { borderColor: '#10B981' }]}
+                  onPress={() => {
+                    setFeeOptions(['7', '10', '15', '20']);
+                    showAlert('تم التحديث', 'تمت استعادة التسعيرة القياسية (7 - 20 شيكل)');
+                  }}
+                >
+                  <Text style={{ color: '#34D399', fontWeight: '800' }}>التسعيرة القياسية 🔄</Text>
+                </Pressable>
+              </View>
+            </View>
+
+            <Text style={styles.darkSectionHeader}>📊 جميع الطلبات في النظام ({orders.length})</Text>
+
+            {orders.map((order) => {
+              const badge = getStatusBadge(order.status);
+              return (
+                <View key={order.id} style={[styles.glassOrderCard, { borderColor: 'rgba(168, 85, 247, 0.35)' }]}>
+                  <View style={styles.orderTopRow}>
+                    <View style={[styles.statusBadge, { backgroundColor: badge.bg, borderColor: badge.border }]}>
+                      <Text style={[styles.statusBadgeText, { color: badge.color }]}>{badge.text}</Text>
+                    </View>
+                    <Text style={styles.orderIdText}>#{order.order_code} • {order.fee} ₪</Text>
+                  </View>
+
+                  <Text style={styles.darkRouteText}>من: {order.pickup} ← إلى: {order.dropoff}</Text>
+                  <Text style={styles.neonPhoneText}>العميل: {order.phone} {order.driver_name ? `| الكابتن: ${order.driver_name}` : ''}</Text>
+
+                  <Pressable
+                    style={[styles.cancelOrderBtn, { marginTop: 10 }]}
+                    onPress={() => handleDeleteOrderAdmin(order.id)}
+                  >
+                    <Text style={styles.cancelOrderText}>حذف السجل نهائياً 🗑️</Text>
+                  </Pressable>
+                </View>
+              );
+            })}
+          </View>
+        </ScrollView>
+      </SafeAreaView>
+    );
+  }
+
+  // ==========================================
+  // 5. الشاشة الرئيسية
   // ==========================================
   return (
     <SafeAreaView style={styles.darkScreenRoot}>
@@ -813,9 +1066,11 @@ export default function App() {
           </GlassInteractiveBox>
 
           <View style={styles.corpFooter}>
-            <Text style={styles.corpFooterText}>
-              © 2026 SwiftDrop Technologies • مزامنة لحظية عبر السحابة
-            </Text>
+            <Pressable onPress={() => setRole('admin_login')}>
+              <Text style={styles.corpFooterText}>
+                © 2026 SwiftDrop Technologies • بوابة الإدارة 👑
+              </Text>
+            </Pressable>
           </View>
         </View>
       </ScrollView>
@@ -888,12 +1143,12 @@ const styles = StyleSheet.create({
   darkInputLabel: { fontSize: 14, fontWeight: '700', color: '#CBD5E1', textAlign: 'right', marginBottom: 6, marginTop: 12 },
   darkInput: { backgroundColor: 'rgba(5, 8, 20, 0.85)', borderWidth: 1.5, borderColor: 'rgba(148, 163, 184, 0.25)', borderRadius: 12, paddingHorizontal: 14, paddingVertical: 13, fontSize: 15, color: '#FFFFFF', textAlign: 'right' },
   textArea: { height: 80, textAlignVertical: 'top' },
-  feeRow: { flexDirection: 'row-reverse', justifyContent: 'space-between', marginTop: 8, marginBottom: 22, gap: 10 },
+  feeRow: { flexDirection: 'row-reverse', justifyContent: 'space-between', marginTop: 8, marginBottom: 14, gap: 10 },
   darkFeeChip: { paddingVertical: 12, borderRadius: 12, backgroundColor: 'rgba(30, 41, 59, 0.8)', alignItems: 'center', borderWidth: 1.5, borderColor: 'rgba(148, 163, 184, 0.2)' },
   darkFeeChipActive: { backgroundColor: 'rgba(56, 189, 248, 0.2)', borderColor: '#38BDF8' },
   darkFeeText: { fontSize: 16, fontWeight: '800', color: '#94A3B8' },
   darkFeeTextActive: { color: '#38BDF8' },
-  neonBlueBtn: { backgroundColor: '#0284C7', paddingVertical: 16, borderRadius: 14, alignItems: 'center' },
+  neonBlueBtn: { backgroundColor: '#0284C7', paddingVertical: 16, borderRadius: 14, alignItems: 'center', marginTop: 8 },
   neonBtnText: { color: '#FFFFFF', fontSize: 17, fontWeight: '800' },
   darkSectionHeader: { fontSize: 18, fontWeight: '800', color: '#FFFFFF', textAlign: 'right', marginBottom: 14 },
   emptyText: { color: '#94A3B8', textAlign: 'center', fontSize: 15, marginTop: 20 },
@@ -911,26 +1166,32 @@ const styles = StyleSheet.create({
   miniCallBtn: { backgroundColor: '#0284C7', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8 },
   miniWaBtn: { backgroundColor: '#16A34A', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8 },
   miniContactText: { color: '#FFFFFF', fontSize: 12, fontWeight: '800' },
+  ratingBox: { marginTop: 12, backgroundColor: 'rgba(245, 158, 11, 0.12)', borderWidth: 1, borderColor: 'rgba(245, 158, 11, 0.4)', borderRadius: 12, padding: 10 },
+  ratingTitle: { color: '#FBBF24', fontSize: 13, fontWeight: '800', textAlign: 'right', marginBottom: 6 },
+  starsRow: { flexDirection: 'row-reverse', justifyContent: 'space-around', gap: 6 },
+  starBtn: { backgroundColor: 'rgba(15, 23, 42, 0.9)', paddingVertical: 6, paddingHorizontal: 10, borderRadius: 8, borderWidth: 1, borderColor: '#F59E0B' },
+  starText: { color: '#FDE68A', fontSize: 13, fontWeight: '800' },
+  driverRatingFeedback: { marginTop: 8, color: '#FBBF24', fontSize: 13, fontWeight: '800', textAlign: 'right' },
   cancelOrderBtn: { marginTop: 12, backgroundColor: 'rgba(239, 68, 68, 0.15)', borderWidth: 1, borderColor: '#EF4444', paddingVertical: 10, borderRadius: 10, alignItems: 'center' },
   cancelOrderText: { color: '#F87171', fontSize: 14, fontWeight: '800' },
   neonPhoneText: { fontSize: 15, fontWeight: '800', color: '#38BDF8', textAlign: 'right' },
   darkOrderFooter: { flexDirection: 'row-reverse', justifyContent: 'space-between', borderTopWidth: 1, borderTopColor: 'rgba(148, 163, 184, 0.15)', paddingTop: 12, marginTop: 12 },
   neonFeeText: { fontSize: 15, fontWeight: '800', color: '#34D399' },
   timeText: { fontSize: 13, fontWeight: '600', color: '#64748B' },
-  liveCaptainPill: { flexDirection: 'row-reverse', alignItems: 'center', backgroundColor: 'rgba(16, 185, 129, 0.2)', borderWidth: 1, borderColor: '#10B981', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 14 },
-  liveCaptainDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#10B981', marginLeft: 6 },
-  liveCaptainText: { fontSize: 13, fontWeight: '800', color: '#34D399' },
-  earningsDashboardCard: { flexDirection: 'row-reverse', backgroundColor: 'rgba(15, 23, 42, 0.88)', borderRadius: 18, padding: 16, marginBottom: 16, borderWidth: 1.5, borderColor: 'rgba(249, 115, 22, 0.35)', alignItems: 'center' },
+  liveCaptainPill: { flexDirection: 'row-reverse', alignItems: 'center', backgroundColor: 'rgba(245, 158, 11, 0.2)', borderWidth: 1, borderColor: '#F59E0B', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 14 },
+  liveCaptainText: { fontSize: 13, fontWeight: '800', color: '#FBBF24' },
+  earningsDashboardCard: { flexDirection: 'row-reverse', backgroundColor: 'rgba(15, 23, 42, 0.88)', borderRadius: 18, padding: 14, marginBottom: 16, borderWidth: 1.5, borderColor: 'rgba(249, 115, 22, 0.35)', alignItems: 'center' },
   statBox: { flex: 1, alignItems: 'center' },
   statDivider: { width: 1, height: 40, backgroundColor: 'rgba(148, 163, 184, 0.2)' },
-  statLabel: { fontSize: 13, color: '#94A3B8', fontWeight: '700', marginBottom: 4 },
-  statValueOrange: { fontSize: 22, fontWeight: '900', color: '#FB923C' },
-  statValueGreen: { fontSize: 22, fontWeight: '900', color: '#34D399' },
+  statLabel: { fontSize: 12, color: '#94A3B8', fontWeight: '700', marginBottom: 4, textAlign: 'center' },
+  statValueOrange: { fontSize: 19, fontWeight: '900', color: '#FB923C' },
+  statValueGreen: { fontSize: 19, fontWeight: '900', color: '#34D399' },
+  statValueBlue: { fontSize: 19, fontWeight: '900', color: '#38BDF8' },
   driverProfileCard: { backgroundColor: 'rgba(15, 23, 42, 0.85)', borderRadius: 18, padding: 14, marginBottom: 16, borderWidth: 1, borderColor: 'rgba(148, 163, 184, 0.2)' },
   driverProfileTitle: { fontSize: 13, fontWeight: '800', color: '#FDBA74', textAlign: 'right', marginBottom: 10 },
   driverInputsRow: { flexDirection: 'row-reverse', gap: 10 },
   tabsRow: { flexDirection: 'row-reverse', gap: 10, marginBottom: 16 },
-  tabBtn: { flex: 1, paddingVertical: 12, borderRadius: 12, backgroundColor: 'rgba(15, 23, 42, 0.75)', borderWidth: 1, borderColor: 'rgba(148, 163, 184, 0.2)', alignItems: 'center' },
+  tabBtn: { flex: 1, paddingVertical: 11, borderRadius: 12, backgroundColor: 'rgba(15, 23, 42, 0.75)', borderWidth: 1, borderColor: 'rgba(148, 163, 184, 0.2)', alignItems: 'center' },
   tabBtnActive: { backgroundColor: 'rgba(249, 115, 22, 0.2)', borderColor: '#F97316' },
   tabBtnText: { fontSize: 14, fontWeight: '800', color: '#94A3B8' },
   tabBtnTextActive: { color: '#FB923C' },
